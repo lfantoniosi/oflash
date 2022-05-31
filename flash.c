@@ -1,8 +1,119 @@
 #include "types.h"
 #include "stdio.h"
+#include "flash.h"
 
-__at(0x0555) uchar MX29_0555;
-__at(0x02aa) uchar MX29_02aa;
+uchar VendorID = 0;
+uchar DeviceID = 0;
+uchar FlashModel = FLASH_NONE;
+
+bool DetectFlashROM()
+{
+	// try to detect the MX29
+	WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa); // just making sure the flashrom is visible in all these slots
+	WrSlt(SLOT_ID(3, 0), 0x02aa, 0x55);
+	WrSlt(SLOT_ID(3, 1), 0x0555, 0x90);
+
+	VendorID = RdSlt(SLOT_ID(3, 3), 0x0000);
+	DeviceID = RdSlt(SLOT_ID(0, 0), 0x0001);
+
+	WrSlt(SLOT_ID(0, 0), 0x0555, 0xf0);
+	
+	if (VendorID == 0xc2 && DeviceID == 0xa4)
+	{
+		printf("FlashROM MX29F040 detected.\r\n");
+		FlashModel = FLASH_MX29;
+		return TRUE;
+	}
+
+	// if not try to detect the SST39
+	WrSlt(SLOT_ID(0, 0), 0x5555, 0xaa);
+	WrSlt(SLOT_ID(3, 0), 0x2aaa, 0x55);
+	WrSlt(SLOT_ID(3, 1), 0x5555, 0x90);
+	
+	VendorID = RdSlt(SLOT_ID(3, 3), 0x0000);
+	DeviceID = RdSlt(SLOT_ID(0, 0), 0x0001);
+	
+	WrSlt(SLOT_ID(0, 0), 0x5555, 0xf0);
+	
+	if (VendorID == 0xbf && DeviceID == 0xb7)
+	{
+		printf("FlashRom SST39SF040 detected.\r\n");
+		FlashModel = FLASH_SST39;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+uchar WaitToggleBit(uchar slotId, uint address, uchar bitMask)
+{
+    uchar a, b;
+
+    do{
+        a = RdSlt(slotId, address) & bitMask;
+        b = RdSlt(slotId, address) & bitMask;
+
+        if(a == b)
+		{
+            a = RdSlt(slotId, address) & bitMask;
+            b = RdSlt(slotId, address) & bitMask;
+        }
+
+    } while(a != b);
+
+	return a;
+}
+
+void EraseBank(uchar slotId)
+{
+	uint i;
+	if (FlashModel == FLASH_MX29)
+	{
+		WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa);
+		WrSlt(SLOT_ID(0, 0), 0x02aa, 0x55);
+		WrSlt(SLOT_ID(0, 0), 0x0555, 0x80);
+		WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa);
+		WrSlt(SLOT_ID(0, 0), 0x02aa, 0x55);
+		WrSlt(slotId, 0x0000, 0x30);
+		WaitToggleBit(slotId, 0x0000, (uchar)(1 << 6));
+		for(;WaitToggleBit(slotId, 0x0000, (uchar)(1 << 3)) != (uchar)(1<<3););
+		WaitToggleBit(slotId, 0x0000, (uchar)(1 << 6));
+		for(;WaitToggleBit(slotId, 0x0000, (uchar)(1 << 7)) != (uchar)(1<<7););
+		WaitToggleBit(slotId, 0x0000, (uchar)(1 << 7));
+		WrSlt(SLOT_ID(0, 0), 0x0555, 0xf0);
+	} 
+	else
+	{
+		for(i = 0; i < 8; i ++)
+		{
+			WrSlt(SLOT_ID(0, 0), 0x5555, 0xaa);
+			WrSlt(SLOT_ID(0, 0), 0x2aaa, 0x55);
+			WrSlt(SLOT_ID(0, 0), 0x5555, 0x80);
+			WrSlt(SLOT_ID(0, 0), 0x5555, 0xaa);
+			WrSlt(SLOT_ID(0, 0), 0x2aaa, 0x55);
+			WrSlt(slotId, i, 0x30);
+			WaitToggleBit(slotId, (i << 12), (uchar)(1 << 6));
+			WrSlt(SLOT_ID(0, 0), 0x5555, 0xf0);
+		}
+	}
+}
+
+void EraseSectors()
+{
+	// omega flash rom is split across multiple slots
+	printf("\r\nErasing 64K banks");
+	EraseBank(SLOT_ID(0, 0));
+	printf(".");
+	EraseBank(SLOT_ID(3, 0));
+	printf(".");
+	EraseBank(SLOT_ID(3, 1));
+	printf(".");
+	EraseBank(SLOT_ID(3, 3));
+	printf(".");
+	printf("done.\r\n");
+}
+
+
+///
 
 void WrSlt_0200(uchar slotId, uint address, uchar byte);
 void WrSlt_8000(uchar slotId, uint address, uchar byte);
@@ -64,12 +175,15 @@ _address_0200::
 	.ds 2
 _byte_0200::
 	.ds 1
+_flashModel_0200:
+	.ds 1
 	__endasm;
 }
 
 extern uchar slotId_0200;
 extern volatile uchar* address_0200;
 extern uchar byte_0200;
+extern uchar flashModel_0200;
 
 void WrSlt_0200_local()
 {
@@ -172,8 +286,8 @@ void PrSlt_0200_local()
 	uchar PPIReg;
 	uchar SltReg;
     uchar a,b;
-    volatile uchar* mx29_x555;
-    volatile uchar* mx29_x2aa;
+    volatile uchar* x555;
+    volatile uchar* x2aa;
 
 	__asm
 		di 
@@ -188,12 +302,20 @@ void PrSlt_0200_local()
 		SLTREG = (SltReg & 0x0f) | ((slotId_0200 & 0x0c) << 4) | ((slotId_0200 & 0x0c) << 2); // set subslots for pages 3 and 2
 	}
 
-    mx29_x555 = (uchar*)(((uint)address_0200 & 0xC000) | 0x0555);
-    mx29_x2aa = (uchar*)(((uint)address_0200 & 0xC000) | 0x02aa);
+	if (flashModel_0200 == FLASH_MX29)
+	{
+		x555 = (uchar*)0x8555;
+		x2aa = (uchar*)0x82aa;
+	} 
+	else
+	{
+		x555 = (uchar*)0xD555;
+		x2aa = (uchar*)0xaaaa;
+	}
 
-    *mx29_x555 = 0xaa;
-    *mx29_x2aa = 0x55;
-    *mx29_x555 = 0xa0;
+    *x555 = 0xaa;
+    *x2aa = 0x55;
+    *x555 = 0xa0;
  
 	*address_0200 = byte_0200;
 
@@ -227,6 +349,7 @@ uchar PrSlt_0200(uchar slotId, uint address, uchar byte)
 	slotId_0200 = slotId;
 	address_0200 = (char *) address;
 	byte_0200 = byte;
+	flashModel_0200 = FlashModel;
 
 	// use local stack close to the code
 	__asm
@@ -260,12 +383,15 @@ _address_8000::
 	.ds 2
 _byte_8000::
 	.ds 1
+_flashModel_8000::
+	.ds 1
 	__endasm;
 }
 
 extern uchar slotId_8000;
 extern volatile uchar* address_8000;
 extern uchar byte_8000;
+extern uchar flashModel_8000;
 
 void WrSlt_8000_local()
 {
@@ -368,8 +494,8 @@ void PrSlt_8000_local()
 	uchar PPIReg;
 	uchar SltReg;
     uchar a,b;
-    volatile uchar* mx29_x555;
-    volatile uchar* mx29_x2aa;
+    volatile uchar* x555;
+    volatile uchar* x2aa;
 
 	__asm
 		di 
@@ -383,12 +509,21 @@ void PrSlt_8000_local()
 	{
 		SLTREG = (SltReg & 0x30) | ((slotId_8000 & 0x0c) << 4) | ((slotId_8000 & 0x0c)) | ((slotId_8000 & 0x0c) >> 2); // set subslots for pages 3, 1 and 0
 	}
-    mx29_x555 = (uchar*)(((uint)address_8000 & 0xC000) | 0x0555);
-    mx29_x2aa = (uchar*)(((uint)address_8000 & 0xC000) | 0x02aa);
 
-    *mx29_x555 = 0xaa;
-    *mx29_x2aa = 0x55;
-    *mx29_x555 = 0xa0;
+	if (flashModel_8000 == FLASH_MX29)
+	{
+		x555 = (uchar*)0x0555;
+		x2aa = (uchar*)0x02aa;
+	} 
+	else
+	{
+		x555 = (uchar*)0x5555;
+		x2aa = (uchar*)0x2aaa;
+	}
+
+	*x555 = 0xaa;
+	*x2aa = 0x55;
+	*x555 = 0xa0;
 	
     *address_8000 = byte_8000;
 
@@ -422,6 +557,7 @@ uchar PrSlt_8000(uchar slotId, uint address, uchar byte)
 	slotId_8000 = slotId;
 	address_8000 = (char *) address;
 	byte_8000 = byte;
+	flashModel_8000 = FlashModel;
 
 	// use local stack close to the code
 	__asm

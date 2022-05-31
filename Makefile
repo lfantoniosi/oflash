@@ -13,13 +13,13 @@ oflash.com: crt0.rel oflash.rel bdos.rel stdio.rel flash.rel
 
 all: of.com
 
-oflash.rel: oflash.c types.h bdos.h stdio.h
+oflash.rel: oflash.c types.h bdos.h stdio.h flash.h
 
 bdos.rel: bdos.c types.h bdos.h
 
 stdio.rel: stdio.c types.h stdio.h 
 
-flash.rel: flash.c types.h stdio.h
+flash.rel: flash.c flash.h types.h stdio.h
 
 
 %.rel : %.c

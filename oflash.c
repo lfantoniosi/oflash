@@ -4,24 +4,11 @@
 #include "types.h"
 #include "bdos.h"
 #include "stdio.h"
+#include "flash.h"
 
-#define FLASH_SST39 0
-#define FLASH_MX29  1
-#define FLASH_NONE	255
-
-uchar VendorID = 0;
-uchar DeviceID = 0;
-uchar FlashModel = FLASH_NONE;
 bool Proceed = TRUE;
 uchar DMABuf[128];
-
-#define SLOT_ID(SLOT, SSLOT) (EXPTBL[SLOT] | (SSLOT << 2) | SLOT)
-
-void WrSlt(uchar slotId, uint address, uchar byte);
-uchar RdSlt(uchar slotId, uint address);
-uchar PrSlt(uchar slotId, uint address, uchar byte);
-void EraseSectorsMX29();
-void ProgramMX29();
+void Program();
 
 int main(int c, char** argv)
 {
@@ -30,7 +17,7 @@ int main(int c, char** argv)
 	int n, xy;
 
 	iniTxt();
-	printf("Maple as Honey: Omega MSX FlashROM Programmer v0.1\r\n");
+	printf("Maple as Honey: Omega MSX FlashROM Programmer v0.2\r\n");
 	printf("2022 by retrocanada\r\n\r\n");
 
 	if (EXPTBL[0] != 0 || EXPTBL[3] == 0)
@@ -84,51 +71,13 @@ int main(int c, char** argv)
 
 		if (Proceed)
 		{
-			// try to detect the MX29
-			WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa);
-			WrSlt(SLOT_ID(3, 0), 0x02aa, 0x55);
-			WrSlt(SLOT_ID(3, 1), 0x0555, 0x90);
-		
-			VendorID = RdSlt(SLOT_ID(0, 0), 0x0000);
-			DeviceID = RdSlt(SLOT_ID(0, 0), 0x0001);
-		
-			WrSlt(SLOT_ID(0, 0), 0x0555, 0xf0);
-			
-			if (VendorID == 0xc2 && DeviceID == 0xa4)
+			Proceed = DetectFlashROM();
+
+			if (!Proceed)
 			{
-				printf("FlashROM MX29F040 detected.\r\n");
-				FlashModel = FLASH_MX29;
-			}
-
-			//if (FlashModel == FLASH_NONE)
-			//{
-			//	// if not try to detect the SST39
-			//	WrSlt(SLOT_ID(0, 0), 0x5555, 0xaa);
-			//	WrSlt(SLOT_ID(0, 0), 0x2aaa, 0x55);
-			//	WrSlt(SLOT_ID(0, 0), 0x5555, 0x90);
-			//
-			//	VendorID = RdSlt(SLOT_ID(0, 0), 0x0000);
-			//	DeviceID = RdSlt(SLOT_ID(0, 0), 0x0001);
-			//
-			//	WrSlt(SLOT_ID(0, 0), 0x5555, 0xf0);
-			//
-			//	if (VendorID == 0xbf && DeviceID == 0xb7)
-			//	{
-			//		printf("FlashRom SST39SF040 detected.\r\n");
-			//		FlashModel = FLASH_SST39;
-			//	}
-			//}
-
-			if (FlashModel == FLASH_NONE)
-			{
-				printf("Vendor Id: 0x%x\r\n", VendorID);
-				printf("Device Id: 0x%x\r\n", DeviceID);
-
 				printf("\r\nERROR: FlashROM not detected...\r\n");
-				Proceed = FALSE;
 			}
-			
-			if (Proceed)
+			else
 			{
 				ENABLE_INT;
 				if (bdos_f_open(&MAIN_FCB) == BDOS_OK)
@@ -166,13 +115,8 @@ int main(int c, char** argv)
 						while(is_key_pressed());
 						while(!is_key_pressed());
 
-						if (FlashModel == FLASH_MX29)
-						{
-							EraseSectorsMX29();
-							ProgramMX29();
-							while(is_key_pressed());
-							while(!is_key_pressed());
-						}
+						EraseSectors();
+						Program();
 					}
 				}
 				else
@@ -193,63 +137,14 @@ int main(int c, char** argv)
 	return 0;
 }
 
-uchar WaitToggleBitMX29(uchar slotId, uint address, uchar bitMask)
-{
-    uchar a, b;
 
-    do{
-        a = RdSlt(slotId, address) & bitMask;
-        b = RdSlt(slotId, address) & bitMask;
-
-        if(a == b)
-		{
-            a = RdSlt(slotId, address) & bitMask;
-            b = RdSlt(slotId, address) & bitMask;
-        }
-
-    } while(a != b);
-
-	return a;
-}
-
-void EraseSectorMX29(uchar slotId)
-{
-	WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa);
-	WrSlt(SLOT_ID(0, 0), 0x02aa, 0x55);
-	WrSlt(SLOT_ID(0, 0), 0x0555, 0x80);
-	WrSlt(SLOT_ID(0, 0), 0x0555, 0xaa);
-	WrSlt(SLOT_ID(0, 0), 0x02aa, 0x55);
-	WrSlt(slotId, 0x0000, 0x30);
-	WaitToggleBitMX29(slotId, 0x0000, (uchar)(1 << 6));
-	for(;WaitToggleBitMX29(slotId, 0x0000, (uchar)(1 << 3)) != (uchar)(1<<3););
-	WaitToggleBitMX29(slotId, 0x0000, (uchar)(1 << 6));
-	for(;WaitToggleBitMX29(slotId, 0x0000, (uchar)(1 << 7)) != (uchar)(1<<7););
-	WaitToggleBitMX29(slotId, 0x0000, (uchar)(1 << 7));
-	WrSlt(SLOT_ID(0, 0), 0x0555, 0xf0);
-}
-
-void EraseSectorsMX29()
-{
-	// omega flash rom is split across multiple slots
-	printf("\r\nErasing 64K sectors");
-	EraseSectorMX29(SLOT_ID(0, 0));
-	printf(".");
-	EraseSectorMX29(SLOT_ID(3, 0));
-	printf(".");
-	EraseSectorMX29(SLOT_ID(3, 1));
-	printf(".");
-	EraseSectorMX29(SLOT_ID(3, 3));
-	printf(".");
-	printf("done.\r\n");
-}
-
-void ProgramMX29()
+void Program()
 {
 	uint p, addr, xy = 0;
 	uchar *ramAddr;
 	ulong romAddr;
 	uchar byte;
-	printf("\r\n\r\nProgramming Flash ROM\r\n");
+	printf("\r\nProgramming Flash ROM\r\n");
 	romAddr = 0x0000;
 	for(p = 0; p < 16; p++)
 	{
@@ -338,6 +233,9 @@ void ProgramMX29()
 		}
 	}
 	WrSlt(SLOT_ID(0, 0), 0x0555, 0xf0);
-	printf("\r\n\r\n done.\r\n\r\nPLEASE RESET THE SYSTEM!");
+	printf("\r\n done.\r\n\r\nPLEASE RESET THE SYSTEM!");
 
+	__asm
+		halt
+	__endasm;
 }
