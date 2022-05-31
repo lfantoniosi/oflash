@@ -17,7 +17,7 @@ int main(int c, char** argv)
 	int n, xy;
 
 	iniTxt();
-	printf("Maple as Honey: Omega MSX FlashROM Programmer v0.2\r\n");
+	printf("Maple as Honey: Omega MSX FlashROM Programmer v0.3\r\n");
 	printf("2022 by retrocanada\r\n\r\n");
 
 	if (EXPTBL[0] != 0 || EXPTBL[3] == 0)
