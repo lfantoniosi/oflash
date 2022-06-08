@@ -90,8 +90,14 @@ void EraseBank(uchar slotId)
 			WrSlt(SLOT_ID(0, 0), 0x5555, 0x80);
 			WrSlt(SLOT_ID(0, 0), 0x5555, 0xaa);
 			WrSlt(SLOT_ID(0, 0), 0x2aaa, 0x55);
+			
 			WrSlt(slotId, (i << 12), 0x30);
 			WaitToggleBit(slotId, (i << 12), (uchar)(1 << 6));
+			for(;WaitToggleBit(slotId, (i << 12), (uchar)(1 << 3)) != (uchar)(1<<3););
+			WaitToggleBit(slotId, (i << 12), (uchar)(1 << 6));
+			for(;WaitToggleBit(slotId, (i << 12), (uchar)(1 << 7)) != (uchar)(1<<7););
+			WaitToggleBit(slotId, (i << 12), (uchar)(1 << 7));
+
 			WrSlt(SLOT_ID(0, 0), 0x5555, 0xf0);
 		}
 	}
